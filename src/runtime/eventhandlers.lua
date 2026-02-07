@@ -7,6 +7,7 @@ Controls["port"].EventHandler = Connect
 Controls["connect"].EventHandler = Connect
 
 queueTimer.EventHandler = Dequeue
+presetTimer.EventHandler = PresetComplete
 
   -------------------------------------------------
   -- Variables/Constants for Fader Functionality --
@@ -86,7 +87,11 @@ for position, area in ipairs(Controls["area_number"]) do
       GetCurrentPresets(area.String, position)
       
       GetChannelLevels(area.String, position)
-      
+    
+      presetChanged[position] = area -- flag for querying
+      presetTimer:Stop()
+      presetTimer:Start(fadeTime)  
+  
     end
   
   end

@@ -74,6 +74,9 @@ sock.EventHandler = function(sock, evt, err)
             local incoming = sock:Read(sock.BufferLength)
 
             if (buffer == nil) then buffer = "" end
+            
+            --local hex = GetHexDataString(incoming)
+            --print(string.format("Rx: %s", hex))
 
             -- append to global buffer
             buffer = buffer .. incoming

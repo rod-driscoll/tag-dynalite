@@ -1,8 +1,8 @@
 -- Information block for the plugin
 PluginInfo = {
   Name = "TAG~Dynalite~Envision Gateway",
-  Version = "2.6",
-  BuildVersion = "2.6.1.11",
+  Version = "2.6.2",
+  BuildVersion = "2.6.2.1",
   Id = "6add4168-6655-4304-9f33-2a756b485f67",
   Description = "A Q-SYS plugin for the Phillips Dynalite Ethernet Gateway (PDEG) and Phillips Dynalite Ethernet Bridge (PDEB).",
   ShowDebug = true,
@@ -69,7 +69,7 @@ function GetProperties()
     {
         Name = "Poll Rate (s)",
         Type = "integer",
-        Min  = 60,
+        Min  = 20,
         Max = 1800,
         Value = 600
     },
@@ -317,7 +317,7 @@ function GetControlLayout(props)
   -------------------------
   ----- Configuration -----
   -------------------------
-  
+
   table.insert(graphics, {
       Type = "Header",
       Text = "DEVICE CONFIGURATION",
@@ -607,15 +607,15 @@ function GetControlLayout(props)
   end
   return layout, graphics
 end
-
 --Start event based logic
 if Controls then
-
   -- Constants
   commandQueue = {}
   max_controls = #Controls["area_number"]
-  pollTimer, queueTimer = Timer.New(), Timer.New()
-  
+  pollTimer, queueTimer, presetTimer = Timer.New(), Timer.New(), Timer.New()
+  local queuePeriod = 0.2 -- changed from 0.1
+  presetChanged = {} -- store changed presets to query when they are finished executing
+
   Protocol = {
   
     ['WhoAreYou'] = {
@@ -623,7 +623,7 @@ if Controls then
       ['DyNet Text'] = "WhoAreYou",
       
       ['DyNet 1'] = function()
-      
+
       end
       
     },
@@ -717,6 +717,7 @@ if Controls then
   function ResetTimers()
     pollTimer:Stop()
     queueTimer:Stop()
+    presetTimer:Stop()
   end
   
   function DisableTcpControls(bool)
@@ -734,7 +735,7 @@ if Controls then
       bits = bits .. bit
     end
   
-    print(bits)
+    --print('bits: '..bits)
     join = string.byte( bitstring.frombinstream(bits) )
     
     Controls[string.format('join_hex')][position].String = bitstring.hexstream( bitstring.pack('8:int', join) )
@@ -793,7 +794,7 @@ if Controls then
     
         if #commandQueue > 0 and sock.IsConnected then Send(table.remove(commandQueue, 1)) end
     
-        queueTimer:Start(0.1)
+        queueTimer:Start(queuePeriod)
     end
     
     ------------------------------------
@@ -820,6 +821,9 @@ if Controls then
     
                 if (buffer == nil) then buffer = "" end
     
+                --local hex = GetHexDataString(incoming)
+                --print(string.format("Rx: %s", hex))
+                
                 -- append to global buffer
                 buffer = buffer .. incoming
     
@@ -910,11 +914,15 @@ if Controls then
     
         queueTimer:Stop()
     
-        if #commandQueue > 0 and serial.IsOpen then Send(table.remove(commandQueue, 1)) end
+        if #commandQueue > 0 and serial.IsOpen then 
+          local command = table.remove(commandQueue, 1)
+          print('Dequeue: '..command)
+          Send(command) 
+        end
     
-        queueTimer:Start(0.1)
+        queueTimer:Start(queuePeriod)
     end
-    
+
     ------------------------------------
     ----- Serial & Data Management -----
     ------------------------------------
@@ -939,6 +947,9 @@ if Controls then
     
                 if (buffer == nil) then buffer = "" end
     
+                local hex = GetHexDataString(incoming)
+                print(string.format("Rx: %s", hex))
+
                 -- append to global buffer
                 buffer = buffer .. incoming
     
@@ -1002,7 +1013,10 @@ if Controls then
   
       queueTimer:Start(0)
   
-      if Properties["Enable Polling"].Value == "Yes" then pollTimer:Start(Properties["Poll Rate (s)"].Value) end
+      if Properties["Enable Polling"].Value == "Yes" then 
+        print('pollTimer:Start('..Properties["Poll Rate (s)"].Value..')')
+        pollTimer:Start(Properties["Poll Rate (s)"].Value)
+      end
   
   end
   
@@ -1022,10 +1036,24 @@ if Controls then
   pollTimer.EventHandler = Poll
   
   function Enqueue(cmd, position)
-      if not position then return table.insert(commandQueue, cmd) end
+      if not position then 
+        return table.insert(commandQueue, cmd) 
+      end
       table.insert(commandQueue, position, cmd)
-      if (position == 1) then queueTimer:Start(0) end
+      if (position == 1) then
+        --print('queueTimer:Start(0)')
+        queueTimer:Start(0)
+      end
   end
+  
+    function PresetComplete()
+        for position, area in pairs(presetChanged) do
+            --print('preset fade time complete in area '..area.String..' so requesting presets')
+            --GetCurrentPresets(area.String, position)
+            GetChannelLevels(area.String, position)
+        end
+        presetChanged = {} -- cleared
+    end
   
   ----------------------------
   ----- Helper Functions -----
@@ -1224,38 +1252,46 @@ if Controls then
       local max_retries = 20
       local count = 0
   
-      -- cut down to 8 bytes
+      -- local hex = GetHexDataString(buffer)
+      -- print(string.format('Parser.AssertValidData: %s', hex))
+
       while (#buffer >= 8) do
           if (count > max_retries) then return end
-  
-          local hex = GetHexDataString(buffer)
-  
-          print(string.format('Parser.Received: %s', hex))
-  
+
+          local first_byte = string.byte(buffer:sub(1, 1))
+
+          -- DyNet 2: starts with 0xAC, 20-byte packet
+          if first_byte == 0xAC then
+              if #buffer >= 20 then
+                  local data = buffer:sub(1, 20)
+                  buffer = #buffer > 20 and buffer:sub(21) or ""
+                  return data
+              else
+                  return -- wait for more data
+              end
+          end
+
+          -- DyNet 1: 8-byte packet with checksum validation
           local first_seven_bytes = {}
-  
-          -- check if the first 8 bytes is a valid command
+
           for i = 1, 7 do table.insert(first_seven_bytes, string.byte(string.sub(buffer, i, i))) end
-  
+
           local maybe_checksum = string.sub(buffer, 8, 8)
-  
+
           local calculated_checksum = calculateChecksum(first_seven_bytes)
-  
-          print(string.format('Parser.Checksum: [%d] == [%d] ? [%s]', string.byte(maybe_checksum),
-              string.byte(calculated_checksum), maybe_checksum == calculated_checksum and 'true' or 'false'))
-  
+
           if maybe_checksum == calculated_checksum then -- found a valid command, remove data from buffer and return data
               local data = string.sub(buffer, 1, 8)
               buffer = #buffer > 8 and string.sub(buffer, 9) or ""
               return data
           else -- discard the first byte
-              local discarded = string.sub(buffer, 1, 2)
               buffer = string.sub(buffer, 2)
-              print(string.format('Parser.Info: Discarding Byte [%d]', string.byte(discarded)))
           end
-  
+
           count = count + 1
       end
+      -- local hex = GetHexDataString(buffer)
+      -- print(string.format('Parser.AssertValidData: %s', hex))
   end
   
   function GetHexDataString(data)
@@ -1308,51 +1344,47 @@ if Controls then
   
       else
   
-          print(string.format("Data:%s", hex))
-  
-          if (string.byte(data:sub(1, 1)) == 0xAC) then -- dynet 2 response
-  
-              if (string.byte(data:sub(2, 2)) == 0x03) then
-  
-                  local area = string.byte(data:sub(8, 8))
-                  local preset = string.byte(data:sub(12, 12))
-                  -- local join = string.byte(data:sub(9, 9))
-  
-                  SetPresetLEDs(preset, area)
-  
-              elseif (string.byte(data:sub(2, 2)) == 0x07) then
-  
-                  local area = string.byte(data:sub(8, 8))
-                  local channel = string.byte(data:sub(12, 12))
-                  local target = string.byte(data:sub(16, 16))
-  
-                  -- convert to fader range
-                  target = (((target - 0) * (0 - 255)) / (254 - 0)) + 255
-  
-                  target = math.floor(target)
-  
-                  -- print(target)
-  
-                  UpdateActiveChannels(channel, area, target, current)
-  
+        local messageType = string.byte(data:sub(1, 1))
+        if (messageType == 0xAC) then -- dynet 2 Dimmer response
+            print(string.format("Dimmer Data:%s", hex))
+            local dimmerType = string.byte(data:sub(2, 2))
+            local area = string.byte(data:sub(8, 8))
+            
+            if (dimmerType == 0x03) then
+                local preset = string.byte(data:sub(12, 12))
+                -- local join = string.byte(data:sub(9, 9))
+                SetPresetLEDs(preset, area)
+
+            elseif (dimmerType == 0x04 or dimmerType == 0x07) then
+                local channel = string.byte(data:sub(12, 12))    
+                local target = string.byte(data:sub(16, 16))
+                -- convert to fader range
+                target = (((target - 0) * (0 - 255)) / (254 - 0)) + 255
+                target = math.floor(target)
+                local current = target     
+                UpdateActiveChannels(channel, area, target, current)
+ 
+            else
+                  --print(string.format("Unhandled Dimmer type [%02X]: %s", string.byte(data:sub(2, 2)), hex))
+            end
+
+        elseif (messageType == 0x1C) or (messageType == 0x23) then -- dynet 1 response (logical or physical)
+              if (messageType == 0x1C) then --logical
+                print(string.format("Logical Data: %s", hex))   
+              elseif (messageType == 0x23) then --physical)
+                print(string.format("Physical? Data: %s", hex))
               end
-  
-          elseif (string.byte(data:sub(1, 1)) == 0x1C) then -- dynet 1 logical response
-  
+
               local opcode = string.byte(data:sub(4, 4))
               local area = string.byte(data:sub(2, 2))
               local join = string.byte(data:sub(7, 7))
   
               if (opcode == 0x60) then
-  
+
                   local channel = string.byte(data:sub(3, 3)) + 1
                   local target = string.byte(data:sub(5, 5))
-  
-                  -- convert to fader range
-                  -- target = (((target - 0) * (0 - 255)) / (254 - 0)) + 255
-  
-                  -- target = math.floor(target)
-  
+                  local current = string.byte(data:sub(6, 6))
+
                   UpdateActiveChannels(channel, area, target, current, join)
   
               elseif (opcode == 0x62) then
@@ -1372,10 +1404,15 @@ if Controls then
                   SetPresetLEDs(preset, area, join)
   
               end
-  
+            elseif (messageType == 0x5C)  then 
+              print(string.format("Physical Data: %s", hex))
+            elseif (messageType == 0x6C)  then 
+              print(string.format("Block Data: %s", hex))
+          else
+              print(string.format("Unhandled sync byte [%02X]: %s", string.byte(data:sub(1, 1)), hex))
           end
       end
-  
+
   end
 
   -------------------------
@@ -1387,47 +1424,48 @@ if Controls then
   Controls["connect"].EventHandler = Connect
   
   queueTimer.EventHandler = Dequeue
+  presetTimer.EventHandler = PresetComplete
   
     -------------------------------------------------
     -- Variables/Constants for Fader Functionality --
     -------------------------------------------------
     
-    area_props = {}
+  area_props = {}
+  
+  for area = 1, Properties["Area Slots"].Value do
+  
+    -- set up object for area number control and channel faders
+    table.insert(area_props, {
+      areaSpamTimer = Timer.New(),
+      validPreset = true,
+      channelSpamTimers = {},
+      canUpdate = {},
+      isMovingTimers = {},
+      isMoving = {},
+      join = getJoin(area),
+    })
     
-    for area = 1, Properties["Area Slots"].Value do
-    
-      -- set up object for area number control and channel faders
-      table.insert(area_props, {
-        areaSpamTimer = Timer.New(),
-        validPreset = true,
-        channelSpamTimers = {},
-        canUpdate = {},
-        isMovingTimers = {},
-        isMoving = {},
-        join = getJoin(area),
-      })
-      
-      if Properties["Protocol"].Value == "DyNet 1" then
-        -- do eventhandlers for bit controls
-        for byte = 0, 7 do
-          Controls[string.format('join_byte_%d', byte)][area].EventHandler = function()
-            area_props[area].join = getJoin(area)
-          end
+    if Properties["Protocol"].Value == "DyNet 1" then
+      -- do eventhandlers for bit controls
+      for byte = 0, 7 do
+        Controls[string.format('join_byte_%d', byte)][area].EventHandler = function()
+          area_props[area].join = getJoin(area)
         end
       end
-  
-  
-  
-      if Properties["Enable Logical Channels"].Value == "Yes" then 
-        for channel = 1, Properties["Logical Channels"].Value do
-          table.insert(area_props[area].channelSpamTimers, Timer.New())
-          table.insert(area_props[area].canUpdate, true)
-          table.insert(area_props[area].isMovingTimers, Timer.New())
-          table.insert(area_props[area].isMoving, false)
-        end
-      end
-      
     end
+
+
+
+    if Properties["Enable Logical Channels"].Value == "Yes" then 
+      for channel = 1, Properties["Logical Channels"].Value do
+        table.insert(area_props[area].channelSpamTimers, Timer.New())
+        table.insert(area_props[area].canUpdate, true)
+        table.insert(area_props[area].isMovingTimers, Timer.New())
+        table.insert(area_props[area].isMoving, false)
+      end
+    end
+    
+  end
   
   -------------------------------------------------
   -------------------------------------------------
@@ -1460,13 +1498,17 @@ if Controls then
         
         print(string.format("Position [%s] Preset is Valid", position))
         area_props[position].validPreset = true
-        
-        Enqueue(Protocol['RecallPreset'][Properties['Protocol'].Value](preset, area.String, math.floor(Controls[string.format("fade_time_%d", preset)][position].Value * 1000), area_props[position].join), 1)
+        local fadeTime = Controls[string.format("fade_time_%d", preset)][position].Value
+        Enqueue(Protocol['RecallPreset'][Properties['Protocol'].Value](preset, area.String, fadeTime * 1000, area_props[position].join), 1)
         
         GetCurrentPresets(area.String, position)
-        
+
         GetChannelLevels(area.String, position)
-        
+
+        presetChanged[position] = area -- flag for querying
+        presetTimer:Stop()
+        presetTimer:Start(fadeTime)
+
       end
     
     end
@@ -1510,6 +1552,8 @@ if Controls then
             local level = math.floor(ctl.Value)
             
             -- write this command directly so there's no delay which would occur by queueing
+            
+            print(('Sending Area [%s] channel [%02X] level [%02X]'):format(area.String, channel, level))
             Send(Protocol['SetLevel'][Properties['Protocol'].Value](channel, level, area.String, area_props[position].join))
             area_props[position].canUpdate[channel] = true
           

@@ -17,7 +17,7 @@ local props = {
   {
       Name = "Poll Rate (s)",
       Type = "integer",
-      Min  = 60,
+      Min  = 20,
       Max = 1800,
       Value = 600
   },

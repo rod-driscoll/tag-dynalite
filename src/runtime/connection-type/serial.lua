@@ -36,7 +36,7 @@ function Dequeue()
 
     if #commandQueue > 0 and serial.IsOpen then Send(table.remove(commandQueue, 1)) end
 
-    queueTimer:Start(0.1)
+    queueTimer:Start(queuePeriod)
 end
 
 ------------------------------------
@@ -63,6 +63,9 @@ serial.EventHandler = function(port, evt)
 
             if (buffer == nil) then buffer = "" end
 
+            local hex = GetHexDataString(incoming)
+            print(string.format("Rx: %s", hex))
+            
             -- append to global buffer
             buffer = buffer .. incoming
 

@@ -7,8 +7,10 @@ function Begin()
 
     queueTimer:Start(0)
 
-    if Properties["Enable Polling"].Value == "Yes" then pollTimer:Start(Properties["Poll Rate (s)"].Value) end
-
+      if Properties["Enable Polling"].Value == "Yes" then 
+        print('pollTimer:Start('..Properties["Poll Rate (s)"].Value..')')
+        pollTimer:Start(Properties["Poll Rate (s)"].Value)
+      end
 end
 
 function Poll()
@@ -30,6 +32,15 @@ function Enqueue(cmd, position)
     if not position then return table.insert(commandQueue, cmd) end
     table.insert(commandQueue, position, cmd)
     if (position == 1) then queueTimer:Start(0) end
+end
+
+function PresetComplete()
+    for position, area in pairs(presetChanged) do
+        --print('preset fade time complete in area '..area.String..' so requesting presets')
+        --GetCurrentPresets(area.String, position)
+        GetChannelLevels(area.String, position)
+    end
+    presetChanged = {} -- cleared
 end
 
 ----------------------------
@@ -233,34 +244,40 @@ function AssertValidData()
     while (#buffer >= 8) do
         if (count > max_retries) then return end
 
-        local hex = GetHexDataString(buffer)
+        local first_byte = string.byte(buffer:sub(1, 1))
 
-        print(string.format('Parser.Received: %s', hex))
+        -- DyNet 2: starts with 0xAC, 20-byte packet
+        if first_byte == 0xAC then
+            if #buffer >= 20 then
+                local data = buffer:sub(1, 20)
+                buffer = #buffer > 20 and buffer:sub(21) or ""
+                return data
+            else
+                return -- wait for more data
+            end
+        end
 
+        -- DyNet 1: 8-byte packet with checksum validation
         local first_seven_bytes = {}
 
-        -- check if the first 8 bytes is a valid command
         for i = 1, 7 do table.insert(first_seven_bytes, string.byte(string.sub(buffer, i, i))) end
 
         local maybe_checksum = string.sub(buffer, 8, 8)
 
         local calculated_checksum = calculateChecksum(first_seven_bytes)
 
-        print(string.format('Parser.Checksum: [%d] == [%d] ? [%s]', string.byte(maybe_checksum),
-            string.byte(calculated_checksum), maybe_checksum == calculated_checksum and 'true' or 'false'))
-
         if maybe_checksum == calculated_checksum then -- found a valid command, remove data from buffer and return data
             local data = string.sub(buffer, 1, 8)
             buffer = #buffer > 8 and string.sub(buffer, 9) or ""
             return data
         else -- discard the first byte
-            local discarded = string.sub(buffer, 1, 2)
             buffer = string.sub(buffer, 2)
-            print(string.format('Parser.Info: Discarding Byte [%d]', string.byte(discarded)))
         end
 
         count = count + 1
     end
+    -- local hex = GetHexDataString(buffer)
+    -- print(string.format('Parser.AssertValidData: %s', hex))
 end
 
 function GetHexDataString(data)
@@ -313,36 +330,36 @@ function ParseData(data)
 
     else
 
-        print(string.format("Data:%s", hex))
+    local messageType = string.byte(data:sub(1, 1))
+    if (messageType == 0xAC) then -- dynet 2 Dimmer response
+        print(string.format("Dimmer Data:%s", hex))
+        local dimmerType = string.byte(data:sub(2, 2))
+        local area = string.byte(data:sub(8, 8))
+        
+        if (dimmerType == 0x03) then
+            local preset = string.byte(data:sub(12, 12))
+            -- local join = string.byte(data:sub(9, 9))
+            SetPresetLEDs(preset, area)
 
-        if (string.byte(data:sub(1, 1)) == 0xAC) then -- dynet 2 response
+        elseif (dimmerType == 0x04 or dimmerType == 0x07) then
+            local channel = string.byte(data:sub(12, 12))    
+            local target = string.byte(data:sub(16, 16))
+            -- convert to fader range
+            target = (((target - 0) * (0 - 255)) / (254 - 0)) + 255
+            target = math.floor(target)
+            local current = target     
+            UpdateActiveChannels(channel, area, target, current)
 
-            if (string.byte(data:sub(2, 2)) == 0x03) then
+        else
+                --print(string.format("Unhandled Dimmer type [%02X]: %s", string.byte(data:sub(2, 2)), hex))
+        end
 
-                local area = string.byte(data:sub(8, 8))
-                local preset = string.byte(data:sub(12, 12))
-                -- local join = string.byte(data:sub(9, 9))
-
-                SetPresetLEDs(preset, area)
-
-            elseif (string.byte(data:sub(2, 2)) == 0x07) then
-
-                local area = string.byte(data:sub(8, 8))
-                local channel = string.byte(data:sub(12, 12))
-                local target = string.byte(data:sub(16, 16))
-
-                -- convert to fader range
-                target = (((target - 0) * (0 - 255)) / (254 - 0)) + 255
-
-                target = math.floor(target)
-
-                -- print(target)
-
-                UpdateActiveChannels(channel, area, target, current)
-
+    elseif (messageType == 0x1C) or (messageType == 0x23) then -- dynet 1 response (logical or physical)
+            if (messageType == 0x1C) then --logical
+            print(string.format("Logical Data: %s", hex))   
+            elseif (messageType == 0x23) then --physical)
+            print(string.format("Physical? Data: %s", hex))
             end
-
-        elseif (string.byte(data:sub(1, 1)) == 0x1C) then -- dynet 1 logical response
 
             local opcode = string.byte(data:sub(4, 4))
             local area = string.byte(data:sub(2, 2))
@@ -352,11 +369,7 @@ function ParseData(data)
 
                 local channel = string.byte(data:sub(3, 3)) + 1
                 local target = string.byte(data:sub(5, 5))
-
-                -- convert to fader range
-                -- target = (((target - 0) * (0 - 255)) / (254 - 0)) + 255
-
-                -- target = math.floor(target)
+                local current = string.byte(data:sub(6, 6))
 
                 UpdateActiveChannels(channel, area, target, current, join)
 
@@ -377,7 +390,12 @@ function ParseData(data)
                 SetPresetLEDs(preset, area, join)
 
             end
-
+        elseif (messageType == 0x5C)  then 
+            print(string.format("Physical Data: %s", hex))
+        elseif (messageType == 0x6C)  then 
+            print(string.format("Block Data: %s", hex))
+        else
+            print(string.format("Unhandled sync byte [%02X]: %s", string.byte(data:sub(1, 1)), hex))
         end
     end
 
