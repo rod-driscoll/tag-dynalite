@@ -48,7 +48,7 @@ function Dequeue()
 
     if #commandQueue > 0 and sock.IsConnected then Send(table.remove(commandQueue, 1)) end
 
-    queueTimer:Start(0.1)
+    queueTimer:Start(queuePeriod)
 end
 
 ------------------------------------

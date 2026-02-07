@@ -20,6 +20,8 @@ The protocol to use.
 
 > The Protocol of the Envision Gateway is set under the *Port Editor* tab in *Dynalite System Builder*
 
+[Basic DyNet Opcodes](https://docs.dynalite.com/system-builder/latest/quick_start/dynet_opcodes.html)
+
 #### Enable Polling
 
 Whether the plugin will poll current presets and levels.
