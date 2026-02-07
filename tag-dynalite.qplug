@@ -1251,10 +1251,8 @@ if Controls then
   
       local max_retries = 20
       local count = 0
-  
-      -- local hex = GetHexDataString(buffer)
-      -- print(string.format('Parser.AssertValidData: %s', hex))
 
+      -- cut down to 8 bytes
       while (#buffer >= 8) do
           if (count > max_retries) then return end
 
@@ -1505,9 +1503,11 @@ if Controls then
 
         GetChannelLevels(area.String, position)
 
-        presetChanged[position] = area -- flag for querying
-        presetTimer:Stop()
-        presetTimer:Start(fadeTime)
+        if fadeTime > 0 then
+            presetChanged[position] = area -- flag for querying
+            presetTimer:Stop()
+            presetTimer:Start(fadeTime)
+        end
 
       end
     

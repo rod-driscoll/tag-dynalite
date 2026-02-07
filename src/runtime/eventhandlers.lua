@@ -88,10 +88,12 @@ for position, area in ipairs(Controls["area_number"]) do
       
       GetChannelLevels(area.String, position)
     
-      presetChanged[position] = area -- flag for querying
-      presetTimer:Stop()
-      presetTimer:Start(fadeTime)  
-  
+      if fadeTime > 0 then
+          presetChanged[position] = area -- flag for querying
+          presetTimer:Stop()
+          presetTimer:Start(fadeTime)
+      end
+      
     end
   
   end
